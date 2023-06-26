@@ -1,0 +1,97 @@
+stages:
+  - analyze
+  - package
+  - deploy
+
+analyze_build:
+  stage: analyze
+  tags:
+    - lpl-node
+  except:
+    - develop
+    - uat
+    - master
+  script:
+    - npm install tslint typescript -g
+    - tslint --project '.'
+    
+cache:
+  paths:
+    - node_modules/
+    - typings/
+
+uat_n_build:
+  stage: package
+  tags:
+    - lpl-node
+  only:
+    - uat
+    - feature-crypto
+  script:
+    - export AWS_ACCESS_KEY_ID=$UAT_N_AWS_ACCESS_KEY_ID
+    - export AWS_SECRET_ACCESS_KEY=$UAT_N_AWS_SECRET_ACCESS_KEY
+    - echo $PRODUCTION_CONFIG | base64 -d > config.json
+    - cat config.json
+    - npm install
+    - npm run wp_uat_build
+    - ls -lt dist/
+    - docker login -u gitlab-ci-token -p $CI_JOB_TOKEN $CI_REGISTRY	
+    - docker build -t $CI_REGISTRY_IMAGE:$CI_COMMIT_REF_NAME-$CI_PIPELINE_ID .
+    - docker push $CI_REGISTRY_IMAGE:$CI_COMMIT_REF_NAME-$CI_PIPELINE_ID
+    - docker rmi -f $CI_REGISTRY_IMAGE:$CI_COMMIT_REF_NAME-$CI_PIPELINE_ID
+    - docker logout
+
+uat_n_deploy:
+  stage: deploy
+  tags:
+    - lpl-node
+  only:
+    - uat
+    - feature-crypto
+  script:
+    - export AWS_ACCESS_KEY_ID=$UAT_N_AWS_ACCESS_KEY_ID
+    - export AWS_SECRET_ACCESS_KEY=$UAT_N_AWS_SECRET_ACCESS_KEY
+    - docker login -u gitlab-ci-token -p $CI_JOB_TOKEN $CI_REGISTRY
+    - docker pull $CI_REGISTRY_IMAGE:$CI_COMMIT_REF_NAME-$CI_PIPELINE_ID 
+    - docker tag $CI_REGISTRY_IMAGE:$CI_COMMIT_REF_NAME-$CI_PIPELINE_ID $UAT_N_AWS_REPO_URL:$CI_COMMIT_REF_NAME-$CI_PIPELINE_ID
+    - $(aws ecr get-login --no-include-email --region us-east-1)
+    - docker push $UAT_N_AWS_REPO_URL:$CI_COMMIT_REF_NAME-$CI_PIPELINE_ID
+    - docker logout
+    - deploy/prod/deploy.sh --cluster $UAT_CLUSTER_NAME --service $SERVICE_NAME --task $TASK_NAME --targetgroup $UAT_TARGET_GROUP $UAT_N_AWS_REPO_URL:$CI_COMMIT_REF_NAME-$CI_PIPELINE_ID
+
+prod_build:
+  stage: package
+  tags:
+    - lpl-node
+  only:
+    - master
+  script:
+    - export AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID
+    - export AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY
+    - echo $PRODUCTION_CONFIG | base64 -d > config.json
+    - cat config.json
+    - npm install
+    - npm run wp_prod_build
+    - ls -lt dist/
+    - docker login -u gitlab-ci-token -p $CI_JOB_TOKEN $CI_REGISTRY	
+    - docker build -t $CI_REGISTRY_IMAGE:$CI_COMMIT_REF_NAME-$CI_PIPELINE_ID .
+    - docker push $CI_REGISTRY_IMAGE:$CI_COMMIT_REF_NAME-$CI_PIPELINE_ID
+    - docker rmi -f $CI_REGISTRY_IMAGE:$CI_COMMIT_REF_NAME-$CI_PIPELINE_ID
+    - docker logout
+
+prod_deploy:
+  stage: deploy
+  tags:
+    - lpl-node
+  only:
+    - master
+  script:
+    - export AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID
+    - export AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY
+    - docker login -u gitlab-ci-token -p $CI_JOB_TOKEN $CI_REGISTRY
+    - docker pull $CI_REGISTRY_IMAGE:$CI_COMMIT_REF_NAME-$CI_PIPELINE_ID 
+    - docker tag $CI_REGISTRY_IMAGE:$CI_COMMIT_REF_NAME-$CI_PIPELINE_ID $AWS_REPO_URL:$CI_COMMIT_REF_NAME-$CI_PIPELINE_ID
+    - $(aws ecr get-login --no-include-email --region us-east-1)
+    - docker push $AWS_REPO_URL:$CI_COMMIT_REF_NAME-$CI_PIPELINE_ID
+    - docker logout
+    - deploy/prod/deploy.sh --cluster $CLUSTER_NAME --service $PROD_SERVICE_NAME --task $PROD_TASK_NAME --targetgroup $TARGET_GROUP $AWS_REPO_URL:$CI_COMMIT_REF_NAME-$CI_PIPELINE_ID
